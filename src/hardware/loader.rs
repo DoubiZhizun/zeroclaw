@@ -152,12 +152,19 @@ fn load_one_plugin(plugin_dir: &Path, manifest_path: &Path) -> Result<LoadedPlug
     }
 
     // Validate binary path: must exist, be a regular file, and reside within plugin_dir.
-    let canonical_plugin_dir = plugin_dir
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("cannot canonicalize plugin dir {}: {}", plugin_dir.display(), e))?;
+    let canonical_plugin_dir = plugin_dir.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "cannot canonicalize plugin dir {}: {}",
+            plugin_dir.display(),
+            e
+        )
+    })?;
     let raw_binary_path = plugin_dir.join(&manifest.exec.binary);
     if !raw_binary_path.exists() {
-        anyhow::bail!("manifest exec binary not found: {}", raw_binary_path.display());
+        anyhow::bail!(
+            "manifest exec binary not found: {}",
+            raw_binary_path.display()
+        );
     }
     let binary_path = raw_binary_path.canonicalize().map_err(|e| {
         anyhow::anyhow!(
