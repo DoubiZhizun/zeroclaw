@@ -146,7 +146,7 @@ async fn fire_llm_output_fires() {
     let mut runner = HookRunner::new();
     runner.register(Box::new(LlmOutputCounter {
         count: count.clone(),
-        last_model: last_model.clone(),
+        _last_model: last_model.clone(),
     }));
 
     // Simulate LLM response
