@@ -1377,7 +1377,8 @@ impl Default for AgentConfig {
             context_aware_tools: false,
             eval: crate::agent::eval::EvalConfig::default(),
             auto_classify: None,
-            context_compression: crate::agent::context_compressor::ContextCompressionConfig::default(),
+            context_compression:
+                crate::agent::context_compressor::ContextCompressionConfig::default(),
         }
     }
 }

@@ -4402,11 +4402,10 @@ pub async fn run(
                     config.agent.context_compression.clone(),
                     config.agent.max_context_tokens,
                 );
-                if let Ok(result) = compressor.compress_if_needed(
-                    &mut history,
-                    provider.as_ref(),
-                    &model_name,
-                ).await {
+                if let Ok(result) = compressor
+                    .compress_if_needed(&mut history, provider.as_ref(), &model_name)
+                    .await
+                {
                     if result.compressed {
                         tracing::info!(
                             passes = result.passes_used,

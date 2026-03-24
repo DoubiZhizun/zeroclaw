@@ -107,13 +107,7 @@ pub struct CompressionResult {
 // ---------------------------------------------------------------------------
 
 const PROBE_TIERS: &[usize] = &[
-    2_000_000,
-    1_000_000,
-    512_000,
-    200_000,
-    128_000,
-    64_000,
-    32_000,
+    2_000_000, 1_000_000, 512_000, 200_000, 128_000, 64_000, 32_000,
 ];
 
 fn next_probe_tier(current: usize) -> usize {
@@ -174,7 +168,9 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .sum();
     // 1.2x safety margin to account for underestimation
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    { (raw as f64 * 1.2) as usize }
+    {
+        (raw as f64 * 1.2) as usize
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +353,10 @@ impl ContextCompressor {
                 truncate_chars(&transcript, self.config.summary_max_chars)
             }
             Err(_) => {
-                tracing::warn!("Summarization timed out after {}s, using transcript truncation", self.config.timeout_secs);
+                tracing::warn!(
+                    "Summarization timed out after {}s, using transcript truncation",
+                    self.config.timeout_secs
+                );
                 truncate_chars(&transcript, self.config.summary_max_chars)
             }
         };
@@ -505,13 +504,13 @@ mod tests {
     #[test]
     fn test_parse_context_limit_anthropic() {
         let msg = "prompt is too long: 150000 tokens > 128000 maximum context length";
-        assert_eq!(parse_context_limit_from_error(msg), Some(128000));
+        assert_eq!(parse_context_limit_from_error(msg), Some(128_000));
     }
 
     #[test]
     fn test_parse_context_limit_openai() {
         let msg = "This model's maximum context length is 128000 tokens. However, your messages resulted in 150000 tokens.";
-        assert_eq!(parse_context_limit_from_error(msg), Some(128000));
+        assert_eq!(parse_context_limit_from_error(msg), Some(128_000));
     }
 
     #[test]
@@ -568,7 +567,10 @@ mod tests {
     fn test_repair_tool_pairs_removes_orphaned() {
         let mut messages = vec![
             msg("system", "sys"),
-            msg("assistant", "[CONTEXT SUMMARY — 5 earlier messages compressed]\nstuff"),
+            msg(
+                "assistant",
+                "[CONTEXT SUMMARY — 5 earlier messages compressed]\nstuff",
+            ),
             msg("tool", "orphaned result"),
             msg("user", "next question"),
         ];
@@ -592,10 +594,7 @@ mod tests {
 
     #[test]
     fn test_build_transcript() {
-        let messages = vec![
-            msg("user", "hello"),
-            msg("assistant", "hi there"),
-        ];
+        let messages = vec![msg("user", "hello"), msg("assistant", "hi there")];
         let t = build_transcript(&messages, 10_000);
         assert!(t.contains("USER: hello"));
         assert!(t.contains("ASSISTANT: hi there"));
