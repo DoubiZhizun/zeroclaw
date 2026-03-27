@@ -3275,8 +3275,9 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
             let mut result_output = truncate_tool_result(&outcome.output, max_tool_result_chars);
-            // Append HMAC receipt to tool result when receipts are enabled (#4810 research)
+            // Append HMAC receipt to tool result when receipts are enabled (#4830)
             if let Some(ref receipt) = outcome.receipt {
+                tracing::debug!(tool = %tool_name, receipt = %receipt, "Tool receipt generated");
                 result_output = format!("{result_output}\n\n[receipt: {receipt}]");
             }
             individual_results.push((tool_call_id, result_output.clone()));
