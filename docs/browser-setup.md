@@ -9,6 +9,7 @@ ZeroClaw supports multiple browser access methods:
 | Method | Use Case | Requirements |
 |--------|----------|--------------|
 | **agent-browser CLI** | Headless automation, AI agents | npm, Chrome |
+| **SeleniumBase UC Mode** | Stealth browsing (anti-detection) | Python 3.7+, pip |
 | **VNC + noVNC** | GUI access, debugging | Xvfb, x11vnc, noVNC |
 | **Chrome Remote Desktop** | Remote GUI via Google | XFCE, Google account |
 
@@ -52,6 +53,51 @@ allowed_domains = ["example.com", "docs.example.com"]
 ```bash
 echo "Open https://example.com and tell me what it says" | zeroclaw agent
 ```
+
+## SeleniumBase Stealth Mode (Anti-Detection)
+
+For sites with bot detection (Cloudflare, DataDome, Imperva), use the SeleniumBase UC Mode backend.
+
+### Prerequisites
+
+```bash
+pip install seleniumbase
+```
+
+### Configuration
+
+```toml
+[browser]
+enabled = true
+backend = "seleniumbase"
+
+[browser.seleniumbase]
+# python_command = "python3"        # Python executable (default: python3)
+# reconnect_timeout = 4             # Seconds to wait for bot checks (default: 4)
+# bridge_script_path = "/path/to/zeroclaw-sbase-bridge.py"  # Optional override
+```
+
+### How It Works
+
+- Uses SeleniumBase UC Mode (Undetected Chrome)
+- Patches chromedriver to avoid detection signals
+- Launches Chrome before attaching driver
+- Disconnects during bot-detection checks
+- Handles Cloudflare, DataDome, and Imperva challenges
+- On Mac/desktop: opens a visible Chrome window
+- On Linux servers without display: uses xvfb (invisible but fully headed)
+
+### Test
+
+```bash
+echo "Open https://bot.sannysoft.com and take a snapshot" | zeroclaw agent
+```
+
+### Limitations
+
+- NOT compatible with headless mode (uses xvfb on Linux servers instead)
+- Requires Python 3.7+ and pip
+- Requires Chrome/Chromium installed on the system
 
 ## VNC Setup (GUI Access)
 

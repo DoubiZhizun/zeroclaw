@@ -413,7 +413,7 @@ Notes:
 | `enabled` | `false` | Enable `browser_open` tool (opens URLs in the system browser without scraping) |
 | `allowed_domains` | `[]` | Allowed domains for `browser_open` (exact/subdomain match, or `"*"` for all public domains) |
 | `session_name` | unset | Browser session name (for agent-browser automation) |
-| `backend` | `agent_browser` | Browser automation backend: `"agent_browser"`, `"rust_native"`, `"computer_use"`, or `"auto"` |
+| `backend` | `agent_browser` | Browser automation backend: `"agent_browser"`, `"rust_native"`, `"computer_use"`, `"seleniumbase"`, or `"auto"` |
 | `native_headless` | `true` | Headless mode for rust-native backend |
 | `native_webdriver_url` | `http://127.0.0.1:9515` | WebDriver endpoint URL for rust-native backend |
 | `native_chrome_path` | unset | Optional Chrome/Chromium executable path for rust-native backend |
@@ -435,6 +435,25 @@ Notes:
 - When `backend = "computer_use"`, the agent delegates browser actions to the sidecar at `computer_use.endpoint`.
 - `allow_remote_endpoint = false` (default) rejects any non-loopback endpoint to prevent accidental public exposure.
 - Use `window_allowlist` to restrict which OS windows the sidecar can interact with.
+
+### `[browser.seleniumbase]`
+
+| Key | Default | Purpose |
+|---|---|---|
+| `bridge_script_path` | unset | Path to the Python bridge script (defaults to bundled `scripts/browser/zeroclaw-sbase-bridge.py`) |
+| `python_command` | `python3` | Python executable to use |
+| `reconnect_timeout` | `4` | Seconds to wait for `uc_open_with_reconnect` bot-check clearance |
+| `extra_driver_args` | `[]` | Extra SeleniumBase `Driver()` kwargs as `key=value` pairs |
+
+Notes:
+
+- When `backend = "seleniumbase"`, the agent uses SeleniumBase UC Mode for stealth anti-detection browsing.
+- UC Mode patches chromedriver, launches Chrome before attaching the driver, and disconnects during bot-detection checks.
+- Handles Cloudflare, DataDome, and Imperva challenges automatically.
+- On Mac/desktop (DISPLAY set or macOS): opens a visible Chrome window.
+- On Linux servers without display: uses xvfb for invisible but fully headed browsing.
+- NOT compatible with `--headless` mode (headless is detectable by bots).
+- Requires Python 3.7+ and `pip install seleniumbase`.
 
 ## `[http_request]`
 
