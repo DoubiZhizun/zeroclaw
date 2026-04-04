@@ -6,7 +6,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
-use tracing::debug;
+use std::sync::OnceLock;
+use tracing::{debug, warn};
 
 /// Supported report output formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,12 +165,26 @@ fn extract_template(file: &TomlTemplateFile, template_name: &str) -> Option<Repo
 }
 
 /// Build the default set of search directories for report template files.
+///
+/// Resolution order:
+/// 1. `ZEROCLAW_DATA_DIR` env var (explicit override for deployments).
+/// 2. The binary's parent directory (for installed distributions).
+/// 3. The compile-time `CARGO_MANIFEST_DIR` (development fallback).
 fn default_search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
 
+    if let Ok(data_dir) = std::env::var("ZEROCLAW_DATA_DIR") {
+        let p = PathBuf::from(data_dir);
+        if p.is_dir() {
+            dirs.push(p);
+        }
+    }
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            dirs.push(parent.to_path_buf());
+            if !dirs.contains(&parent.to_path_buf()) {
+                dirs.push(parent.to_path_buf());
+            }
         }
     }
 
@@ -181,13 +196,33 @@ fn default_search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Load a named template for the given language from TOML files.
+/// Cache for resolved templates, keyed by `(template_name, lang)`.
+/// Avoids repeated filesystem reads and TOML parsing on every call.
+fn cached_load_template(template_name: &str, lang: &str) -> ReportTemplate {
+    use std::sync::Mutex;
+
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), ReportTemplate>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let key = (template_name.to_string(), lang.to_string());
+    let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+
+    if let Some(tpl) = map.get(&key) {
+        return tpl.clone();
+    }
+
+    let tpl = resolve_template(template_name, lang);
+    map.insert(key, tpl.clone());
+    tpl
+}
+
+/// Resolve a named template for the given language from TOML files (uncached).
 ///
 /// Resolution order:
 /// 1. `report_templates/{lang}.toml`
 /// 2. `report_templates/en.toml` (English fallback)
 /// 3. Hardcoded English default (always available)
-fn load_template(template_name: &str, lang: &str) -> ReportTemplate {
+fn resolve_template(template_name: &str, lang: &str) -> ReportTemplate {
     let search_dirs = default_search_dirs();
 
     // Try the requested locale first.
@@ -213,6 +248,24 @@ fn load_template(template_name: &str, lang: &str) -> ReportTemplate {
 /// Hardcoded English templates as a final fallback when no TOML files are found.
 fn hardcoded_english(template_name: &str) -> ReportTemplate {
     match template_name {
+        "milestone_report" => ReportTemplate {
+            name: "Milestone Report".into(),
+            sections: vec![
+                TemplateSection {
+                    heading: "Project".into(),
+                    body: "{{project_name}}".into(),
+                },
+                TemplateSection {
+                    heading: "Milestones".into(),
+                    body: "{{milestones}}".into(),
+                },
+                TemplateSection {
+                    heading: "Status".into(),
+                    body: "{{status}}".into(),
+                },
+            ],
+            format: ReportFormat::Markdown,
+        },
         "weekly_status" => ReportTemplate {
             name: "Weekly Status".into(),
             sections: vec![
@@ -283,24 +336,20 @@ fn hardcoded_english(template_name: &str) -> ReportTemplate {
             ],
             format: ReportFormat::Markdown,
         },
-        _ => ReportTemplate {
-            name: "Milestone Report".into(),
-            sections: vec![
-                TemplateSection {
-                    heading: "Project".into(),
-                    body: "{{project_name}}".into(),
-                },
-                TemplateSection {
-                    heading: "Milestones".into(),
-                    body: "{{milestones}}".into(),
-                },
-                TemplateSection {
-                    heading: "Status".into(),
-                    body: "{{status}}".into(),
-                },
-            ],
-            format: ReportFormat::Markdown,
-        },
+        other => {
+            warn!(
+                template = other,
+                "unknown template name in hardcoded_english fallback"
+            );
+            ReportTemplate {
+                name: "Unknown Template".into(),
+                sections: vec![TemplateSection {
+                    heading: "Notice".into(),
+                    body: format!("No template found for '{other}'."),
+                }],
+                format: ReportFormat::Markdown,
+            }
+        }
     }
 }
 
@@ -308,22 +357,22 @@ fn hardcoded_english(template_name: &str) -> ReportTemplate {
 
 /// Return the built-in weekly status template for the given language.
 pub fn weekly_status_template(lang: &str) -> ReportTemplate {
-    load_template("weekly_status", lang)
+    cached_load_template("weekly_status", lang)
 }
 
 /// Return the built-in sprint review template for the given language.
 pub fn sprint_review_template(lang: &str) -> ReportTemplate {
-    load_template("sprint_review", lang)
+    cached_load_template("sprint_review", lang)
 }
 
 /// Return the built-in risk register template for the given language.
 pub fn risk_register_template(lang: &str) -> ReportTemplate {
-    load_template("risk_register", lang)
+    cached_load_template("risk_register", lang)
 }
 
 /// Return the built-in milestone report template for the given language.
 pub fn milestone_report_template(lang: &str) -> ReportTemplate {
-    load_template("milestone_report", lang)
+    cached_load_template("milestone_report", lang)
 }
 
 /// High-level template rendering function.
@@ -338,7 +387,7 @@ pub fn render_template(
 ) -> anyhow::Result<String> {
     let tpl = match template_name {
         "weekly_status" | "sprint_review" | "risk_register" | "milestone_report" => {
-            load_template(template_name, language)
+            cached_load_template(template_name, language)
         }
         _ => anyhow::bail!("unsupported template: {}", template_name),
     };

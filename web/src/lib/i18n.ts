@@ -7,7 +7,7 @@ export type { TranslationKey };
 // Load per-locale JSON files at build time via Vite glob import
 // ---------------------------------------------------------------------------
 
-const localeModules = import.meta.glob<Record<string, string>>('./locales/*.json', { eager: true });
+const localeModules = import.meta.glob<{ default: Record<string, string> }>('./locales/*.json', { eager: true });
 
 export type Locale = 'ar' | 'bn' | 'cs' | 'da' | 'de' | 'el' | 'en' | 'es' | 'fi' | 'fr' | 'he' | 'hi' | 'hu' | 'id' | 'it' | 'ja' | 'ko' | 'nb' | 'nl' | 'pl' | 'pt' | 'ro' | 'ru' | 'sv' | 'th' | 'tl' | 'tr' | 'uk' | 'ur' | 'vi' | 'zh';
 
@@ -18,8 +18,8 @@ for (const [path, mod] of Object.entries(localeModules)) {
   const match = path.match(/\.\/locales\/(.+)\.json$/);
   if (match) {
     const locale = match[1] as Locale;
-    // Vite eager JSON imports expose the object as `default` or directly
-    translations[locale] = (mod as { default?: Record<string, string> }).default ?? mod;
+    // Vite eager JSON imports expose the object under `default`
+    translations[locale] = mod.default;
   }
 }
 
