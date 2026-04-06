@@ -360,6 +360,7 @@ struct App {
 
     // Model
     model_idx: usize,
+    fetched_models: Vec<String>,
 
     // Channel
     channel_idx: usize,
@@ -437,6 +438,7 @@ impl App {
             provider_scroll: 0,
             api_key_input: String::new(),
             model_idx: 0,
+            fetched_models: Vec::new(),
             channel_idx: 0,
             channel_scroll: 0,
             search_provider_idx: 0,
@@ -668,7 +670,21 @@ impl App {
     }
 
     fn selected_model(&self) -> &str {
-        MODELS.get(self.model_idx).map_or("auto", |m| m)
+        if self.fetched_models.is_empty() {
+            MODELS.get(self.model_idx).map_or("auto", |m| m)
+        } else {
+            self.fetched_models
+                .get(self.model_idx)
+                .map_or("auto", |m| m.as_str())
+        }
+    }
+
+    fn model_count(&self) -> usize {
+        if self.fetched_models.is_empty() {
+            MODELS.len()
+        } else {
+            self.fetched_models.len()
+        }
     }
 
     fn selected_channel(&self) -> &str {
@@ -771,6 +787,12 @@ pub async fn run_tui_onboarding() -> Result<()> {
                 }
                 println!("  Run `zeroclaw daemon` to start your agent.");
                 println!();
+
+                // Auto-start channels flag — match CLI wizard behavior
+                if channel != "Skip for now" {
+                    // SAFETY: called during single-threaded post-wizard flow.
+                    unsafe { std::env::set_var("ZEROCLAW_AUTOSTART_CHANNELS", "1") };
+                }
             }
             Err(e) => {
                 eprintln!();
@@ -831,6 +853,16 @@ async fn save_tui_config(app: &App) -> Result<()> {
 
     // Also push config to Docker container if running
     push_config_to_docker(app).await;
+
+    // Refresh model cache for the selected provider (non-blocking, best-effort)
+    let provider_id = app.selected_provider_id().to_string();
+    if crate::onboard::supports_live_model_fetch(&provider_id) {
+        let config_clone = config.clone();
+        tokio::spawn(async move {
+            let _ =
+                crate::onboard::run_models_refresh(&config_clone, Some(&provider_id), false).await;
+        });
+    }
 
     Ok(())
 }
@@ -1369,7 +1401,17 @@ fn handle_input(app: &mut App, key: KeyCode) {
                 nav_down(&mut app.provider_idx, max);
                 scroll_into_view(&mut app.provider_scroll, app.provider_idx, 16);
             }
-            KeyCode::Enter => app.screen = Screen::ApiKeyInput,
+            KeyCode::Enter => {
+                // Populate provider-specific model list from curated models
+                let provider_id = app.selected_provider_id();
+                let curated = crate::onboard::curated_models_for_provider(provider_id);
+                app.fetched_models = std::iter::once("Auto (recommended)".to_string())
+                    .chain(curated.into_iter().map(|(id, _desc)| id))
+                    .chain(std::iter::once("Custom model ID...".to_string()))
+                    .collect();
+                app.model_idx = 0;
+                app.screen = Screen::ApiKeyInput;
+            }
             KeyCode::Esc => app.screen = Screen::ProviderTier,
             _ => {}
         },
@@ -1404,7 +1446,8 @@ fn handle_input(app: &mut App, key: KeyCode) {
         Screen::ModelSelect => match key {
             KeyCode::Up | KeyCode::Char('k') => nav_up(&mut app.model_idx),
             KeyCode::Down | KeyCode::Char('j') => {
-                nav_down(&mut app.model_idx, MODELS.len() - 1);
+                let max = app.model_count() - 1;
+                nav_down(&mut app.model_idx, max);
             }
             KeyCode::Enter => app.screen = Screen::ChannelStatus,
             KeyCode::Esc => app.screen = Screen::ModelConfigured,
@@ -2538,11 +2581,17 @@ fn render_model_select(frame: &mut Frame, area: Rect, app: &App) {
         layout[1],
     );
 
-    let items: Vec<SelectableItem> = MODELS
+    let model_list: Vec<String> = if app.fetched_models.is_empty() {
+        MODELS.iter().map(|m| (*m).to_string()).collect()
+    } else {
+        app.fetched_models.clone()
+    };
+
+    let items: Vec<SelectableItem> = model_list
         .iter()
         .enumerate()
         .map(|(i, model)| SelectableItem {
-            label: model.to_string(),
+            label: model.clone(),
             hint: if i == 0 {
                 "default".to_string()
             } else {
@@ -3962,6 +4011,7 @@ mod tests {
             provider_scroll: 0,
             api_key_input: String::new(),
             model_idx: 0,
+            fetched_models: Vec::new(),
             channel_idx: 0,
             channel_scroll: 0,
             search_provider_idx: 0,
