@@ -2722,19 +2722,10 @@ mod tests {
         // stdout redirect to /dev/null
         assert_eq!(p.forbidden_path_argument("echo hello >/dev/null"), None);
         // space-separated redirect
-        assert_eq!(
-            p.forbidden_path_argument("some_cmd > /dev/null 2>&1"),
-            None
-        );
+        assert_eq!(p.forbidden_path_argument("some_cmd > /dev/null 2>&1"), None);
         // /dev/stdout and /dev/stderr
-        assert_eq!(
-            p.forbidden_path_argument("echo msg >/dev/stdout"),
-            None
-        );
-        assert_eq!(
-            p.forbidden_path_argument("echo err >/dev/stderr"),
-            None
-        );
+        assert_eq!(p.forbidden_path_argument("echo msg >/dev/stdout"), None);
+        assert_eq!(p.forbidden_path_argument("echo err >/dev/stderr"), None);
         // /dev/zero as input
         assert_eq!(
             p.forbidden_path_argument("dd if=/dev/zero of=./out bs=1 count=1"),
