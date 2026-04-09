@@ -1870,7 +1870,7 @@ fn render(frame: &mut Frame, app: &App) {
         | Screen::ModelSelect
         | Screen::ProviderSelect
         | Screen::ProviderTier
-        | Screen::WebSearchProvider => 3,
+        | Screen::WebSearchProvider => 1,
         _ => 10,
     };
     let outer = Layout::vertical([
