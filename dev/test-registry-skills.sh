@@ -45,27 +45,26 @@ printf "\n${BOLD}Registry Skills E2E Test${RESET}\n"
 printf "${DIM}Binary:  %s${RESET}\n" "$ZEROCLAW"
 printf "${DIM}Branch:  %s${RESET}\n" "$(git branch --show-current 2>/dev/null || echo 'unknown')"
 
-# ── All 16 skills from zeroclaw-labs/zeroclaw-skills ─────────────
-REGISTRY_SKILLS="
-  auto-coder
-  web-researcher
-  telegram-assistant
-  code-reviewer
-  doc-writer
-  knowledge-base
-  git-assistant
-  multi-agent-router
-  slack-connector
-  discord-moderator
-  data-analyst
-  security-scanner
-  api-tester
-  ci-helper
-  email-responder
-  self-improving-agent
-"
-
+# ── Discover skills from the registry cache ──────────────────────
 SKILLS_DIR="$HOME/.zeroclaw/workspace/skills"
+REGISTRY_DIR="$HOME/.zeroclaw/workspace/skills-registry"
+
+# Bootstrap the registry cache by attempting a dummy install (which
+# clones/pulls the registry even though it fails).
+if [ ! -d "$REGISTRY_DIR/skills" ]; then
+  info "=== Bootstrap registry cache ==="
+  "$ZEROCLAW" skills install __bootstrap_probe__ 2>&1 || true
+fi
+
+if [ -d "$REGISTRY_DIR/skills" ]; then
+  REGISTRY_SKILLS=$(ls "$REGISTRY_DIR/skills/" 2>/dev/null | tr '\n' ' ')
+else
+  printf "${RED}Error: Registry cache not found at %s${RESET}\n" "$REGISTRY_DIR"
+  exit 1
+fi
+
+SKILL_COUNT=$(echo $REGISTRY_SKILLS | wc -w | tr -d ' ')
+printf "${DIM}Registry:  %d skills discovered${RESET}\n" "$SKILL_COUNT"
 
 # ══════════════════════════════════════════════════════════════════
 # Section 1: Install each skill by bare name
@@ -123,10 +122,10 @@ LIST_OUTPUT=$("$ZEROCLAW" skills list 2>&1)
 INSTALLED_COUNT=$(printf '%s' "$LIST_OUTPUT" | grep -c "v[0-9]" || true)
 INSTALLED_COUNT=$(printf '%s' "$INSTALLED_COUNT" | tr -d ' ')
 
-if [ "$INSTALLED_COUNT" -ge 16 ]; then
-  pass "skills list shows $INSTALLED_COUNT skills (expected ≥16)"
+if [ "$INSTALLED_COUNT" -ge "$SKILL_COUNT" ]; then
+  pass "skills list shows $INSTALLED_COUNT skills (expected ≥$SKILL_COUNT)"
 else
-  fail "skills list shows $INSTALLED_COUNT skills (expected ≥16)"
+  fail "skills list shows $INSTALLED_COUNT skills (expected ≥$SKILL_COUNT)"
 fi
 
 for skill in $INSTALLED_SKILLS; do
@@ -186,10 +185,10 @@ else
 fi
 
 CACHED_SKILLS=$(ls "$REGISTRY_DIR/skills/" 2>/dev/null | wc -l | tr -d ' ')
-if [ "$CACHED_SKILLS" -ge 16 ]; then
+if [ "$CACHED_SKILLS" -ge "$SKILL_COUNT" ]; then
   pass "registry cache has $CACHED_SKILLS skill directories"
 else
-  fail "registry cache has only $CACHED_SKILLS skill directories (expected ≥16)"
+  fail "registry cache has only $CACHED_SKILLS skill directories (expected ≥$SKILL_COUNT)"
 fi
 
 # ══════════════════════════════════════════════════════════════════

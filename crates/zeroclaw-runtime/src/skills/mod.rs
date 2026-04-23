@@ -128,6 +128,37 @@ fn warn_skipped_skill(path: &Path, summary: &str, allow_scripts: bool) {
     }
 }
 
+fn warn_metadata_drift(skill_dir: &Path, toml_skill: &Skill, md_path: &Path) {
+    if !md_path.exists() {
+        return;
+    }
+    let Ok(md_content) = std::fs::read_to_string(md_path) else {
+        return;
+    };
+    let parsed = parse_skill_markdown(&md_content);
+    let dir_name = skill_dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    if let Some(ref md_name) = parsed.meta.name {
+        if md_name != &toml_skill.name {
+            tracing::warn!(
+                "skill '{}': name mismatch between TOML ('{}') and SKILL.md ('{}')",
+                dir_name,
+                toml_skill.name,
+                md_name,
+            );
+        }
+    }
+    if let Some(ref md_desc) = parsed.meta.description {
+        let md_desc = md_desc.trim();
+        if !md_desc.is_empty() && md_desc != ">-" && md_desc != toml_skill.description.trim() {
+            tracing::warn!(
+                "skill '{}': description mismatch between TOML and SKILL.md — TOML takes precedence",
+                dir_name,
+            );
+        }
+    }
+}
+
 /// Load all skills from the workspace skills directory
 pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
     load_skills_with_open_skills_config(workspace_dir, None, None, None)
@@ -225,12 +256,17 @@ pub fn load_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Vec
         let manifest_toml_path = path.join("manifest.toml");
         let md_path = path.join("SKILL.md");
 
-        if skill_toml_path.exists() {
-            if let Ok(skill) = load_skill_toml(&skill_toml_path) {
-                skills.push(skill);
-            }
+        let toml_path = if skill_toml_path.exists() {
+            Some(skill_toml_path)
         } else if manifest_toml_path.exists() {
-            if let Ok(skill) = load_skill_toml(&manifest_toml_path) {
+            Some(manifest_toml_path)
+        } else {
+            None
+        };
+
+        if let Some(toml_path) = toml_path {
+            if let Ok(skill) = load_skill_toml(&toml_path) {
+                warn_metadata_drift(&path, &skill, &md_path);
                 skills.push(skill);
             }
         } else if md_path.exists()
@@ -293,12 +329,17 @@ fn load_open_skills_from_directory(skills_dir: &Path, allow_scripts: bool) -> Ve
         let manifest_toml_path = path.join("manifest.toml");
         let md_path = path.join("SKILL.md");
 
-        if skill_toml_path.exists() {
-            if let Ok(skill) = load_skill_toml(&skill_toml_path) {
-                skills.push(finalize_open_skill(skill));
-            }
+        let toml_path = if skill_toml_path.exists() {
+            Some(skill_toml_path)
         } else if manifest_toml_path.exists() {
-            if let Ok(skill) = load_skill_toml(&manifest_toml_path) {
+            Some(manifest_toml_path)
+        } else {
+            None
+        };
+
+        if let Some(toml_path) = toml_path {
+            if let Ok(skill) = load_skill_toml(&toml_path) {
+                warn_metadata_drift(&path, &skill, &md_path);
                 skills.push(finalize_open_skill(skill));
             }
         } else if md_path.exists()
@@ -1556,7 +1597,9 @@ pub fn install_registry_skill_source(
     }
 
     install_local_skill_source(
-        skill_dir.to_str().unwrap_or(source),
+        skill_dir.to_str().with_context(|| {
+            format!("registry path is not valid UTF-8: {}", skill_dir.display())
+        })?,
         skills_path,
         allow_scripts,
     )
