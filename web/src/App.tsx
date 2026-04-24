@@ -233,6 +233,13 @@ function AppContent() {
     <DraftContext.Provider value={draftStore}>
       <LocaleContext.Provider value={{ locale, setAppLocale }}>
         <Routes>
+          {/* Standalone chat panel — no sidebar/header, used by the menu bar dropdown */}
+          <Route path="/chat" element={
+            <div className="h-screen flex flex-col" style={{ background: 'var(--pc-bg-base)' }}>
+              <AgentChat />
+            </div>
+          } />
+
           <Route element={<Layout />}>
             <Route path="/" element={<Dashboard />} />
             <Route path="/agent" element={<AgentChat />} />

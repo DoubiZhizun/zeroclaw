@@ -4,22 +4,24 @@
   "version": "0.6.7",
   "identifier": "ai.zeroclawlabs.desktop",
   "build": {
-    "devUrl": "http://localhost:5173/",
-    "frontendDist": "http://127.0.0.1:42617/_app/"
+    "frontendDist": "chat-ui"
   },
   "app": {
     "windows": [
       {
+        "label": "chat",
         "title": "ZeroClaw",
-        "width": 1200,
-        "height": 800,
-        "resizable": true,
-        "fullscreen": false,
-        "visible": true
+        "width": 380,
+        "height": 520,
+        "resizable": false,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
-      "csp": "default-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline' http://127.0.0.1:* http://localhost:*; img-src 'self' http://127.0.0.1:* http://localhost:* data:"
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
     }
   },
   "bundle": {

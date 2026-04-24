@@ -72,11 +72,8 @@ end tell"#
             let title = chunk[1].to_string();
             let value = chunk[2].to_string();
 
-            // Apply role filter if provided.
-            if let Some(ref filter) = role_filter {
-                if !role.to_lowercase().contains(&filter.to_lowercase()) {
-                    continue;
-                }
+            if let Some(ref filter) = role_filter && !role.to_lowercase().contains(&filter.to_lowercase()) {
+                continue;
             }
 
             elements.push(UIElement {

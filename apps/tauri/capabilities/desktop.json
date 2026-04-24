@@ -1,14 +1,9 @@
 {
   "identifier": "desktop",
   "description": "Desktop-specific permissions for ZeroClaw",
-  "windows": ["main"],
+  "windows": ["chat"],
   "permissions": [
     "core:default",
-    "shell:allow-open",
-    "shell:allow-execute",
-    "store:allow-get",
-    "store:allow-set",
-    "store:allow-save",
-    "store:allow-load"
+    "shell:allow-open"
   ]
 }

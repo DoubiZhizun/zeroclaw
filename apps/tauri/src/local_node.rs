@@ -311,7 +311,9 @@ async fn run_node_connection(state: &SharedState) -> anyhow::Result<()> {
     if let Some(ref t) = token {
         request.headers_mut().insert(
             "Authorization",
-            format!("Bearer {t}").parse().unwrap_or_default(),
+            format!("Bearer {t}")
+                .parse()
+                .map_err(|e| anyhow::anyhow!("invalid bearer header: {e}"))?,
         );
     }
 
@@ -326,12 +328,12 @@ async fn run_node_connection(state: &SharedState) -> anyhow::Result<()> {
         device_type: std::env::consts::OS,
     };
     let msg = serde_json::to_string(&register)?;
-    write.send(Message::Text(msg.into())).await?;
+    write.send(Message::Text(msg)).await?;
 
     // Process incoming messages.
     while let Some(Ok(msg)) = read.next().await {
         let text = match msg {
-            Message::Text(t) => t.to_string(),
+            Message::Text(t) => t,
             Message::Ping(p) => {
                 let _ = write.send(Message::Pong(p)).await;
                 continue;
@@ -352,7 +354,7 @@ async fn run_node_connection(state: &SharedState) -> anyhow::Result<()> {
                 error,
             };
             let result_json = serde_json::to_string(&result)?;
-            write.send(Message::Text(result_json.into())).await?;
+            write.send(Message::Text(result_json)).await?;
         }
     }
 

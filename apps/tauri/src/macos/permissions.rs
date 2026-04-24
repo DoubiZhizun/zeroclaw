@@ -169,7 +169,7 @@ print(result)
 
 pub fn check_speech_recognition() -> &'static str {
     let script = r#"import Speech; print(SFSpeechRecognizer.authorizationStatus().rawValue)"#;
-    let output = Command::new("swift").args(["-e", &script]).output();
+    let output = Command::new("swift").args(["-e", script]).output();
     match output {
         Ok(out) => {
             let s = String::from_utf8_lossy(&out.stdout).trim().to_string();

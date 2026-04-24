@@ -1,7 +1,7 @@
 {
   "identifier": "mobile",
   "description": "Mobile-specific permissions for ZeroClaw",
-  "windows": ["main"],
+  "windows": ["chat"],
   "permissions": [
     "core:default"
   ]
