@@ -4,7 +4,6 @@ use crate::agent::dispatcher::{
 use crate::agent::eval::AutoClassifyExt;
 use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
-use crate::i18n::ToolDescriptions;
 use crate::observability::{self, Observer, ObserverEvent};
 use crate::platform;
 use crate::security::SecurityPolicy;
@@ -47,7 +46,6 @@ pub struct Agent {
     #[allow(dead_code)] // WIP: stored for future runtime tool filtering
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<zeroclaw_memory::response_cache::ResponseCache>>,
-    tool_descriptions: Option<ToolDescriptions>,
     /// Pre-rendered security policy summary injected into the system prompt
     /// so the LLM knows the concrete constraints before making tool calls.
     security_summary: Option<String>,
@@ -84,7 +82,6 @@ pub struct AgentBuilder {
     route_model_by_hint: Option<HashMap<String, String>>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<zeroclaw_memory::response_cache::ResponseCache>>,
-    tool_descriptions: Option<ToolDescriptions>,
     security_summary: Option<String>,
     autonomy_level: Option<crate::security::AutonomyLevel>,
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
@@ -121,7 +118,6 @@ impl AgentBuilder {
             route_model_by_hint: None,
             allowed_tools: None,
             response_cache: None,
-            tool_descriptions: None,
             security_summary: None,
             autonomy_level: None,
             activated_tools: None,
@@ -246,11 +242,6 @@ impl AgentBuilder {
         self
     }
 
-    pub fn tool_descriptions(mut self, tool_descriptions: Option<ToolDescriptions>) -> Self {
-        self.tool_descriptions = tool_descriptions;
-        self
-    }
-
     pub fn security_summary(mut self, summary: Option<String>) -> Self {
         self.security_summary = summary;
         self
@@ -324,7 +315,6 @@ impl AgentBuilder {
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
-            tool_descriptions: self.tool_descriptions,
             security_summary: self.security_summary,
             autonomy_level: self
                 .autonomy_level
@@ -536,6 +526,19 @@ impl Agent {
             None
         };
 
+        // Filter out excluded tools (non_cli_excluded_tools). The channel
+        // orchestrator applies this, but Agent::from_config (used by ws.rs)
+        // doesn't go through that path.
+        let excluded = &config.autonomy.non_cli_excluded_tools;
+        if !excluded.is_empty() {
+            tools.retain(|t| !excluded.iter().any(|ex| ex == t.name()));
+        }
+
+        // Load skills and register them as callable tools so WebSocket/daemon
+        // sessions can execute them (not just describe them in the prompt).
+        let skills = crate::skills::load_skills_with_config(&config.workspace_dir, config);
+        tools::register_skill_tools(&mut tools, &skills, security.clone());
+
         Agent::builder()
             .provider(provider)
             .tools(tools)
@@ -560,10 +563,7 @@ impl Agent {
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
             .identity_config(config.identity.clone())
-            .skills(crate::skills::load_skills_with_config(
-                &config.workspace_dir,
-                config,
-            ))
+            .skills(skills)
             .skills_prompt_mode(config.skills.prompt_injection_mode)
             .auto_save(config.memory.auto_save)
             .security_summary(Some(security.prompt_summary()))
@@ -640,7 +640,6 @@ impl Agent {
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
             dispatcher_instructions: &instructions,
-            tool_descriptions: self.tool_descriptions.as_ref(),
             security_summary: self.security_summary.clone(),
             autonomy_level: self.autonomy_level,
         };
@@ -919,7 +918,7 @@ impl Agent {
                         },
                     },
                     &effective_model,
-                    self.temperature,
+                    Some(self.temperature),
                 )
                 .await
             {
@@ -994,6 +993,7 @@ impl Agent {
         &mut self,
         user_message: &str,
         event_tx: tokio::sync::mpsc::Sender<TurnEvent>,
+        cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String> {
         // ── Preamble (identical to turn) ───────────────────────────────
         if self.history.is_empty() {
@@ -1040,6 +1040,14 @@ impl Agent {
 
         // ── Turn loop ──────────────────────────────────────────────────
         for _ in 0..self.config.max_tool_iterations {
+            // Early exit if the caller cancelled this turn (e.g. user abort)
+            if cancel_token
+                .as_ref()
+                .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+            {
+                return Err(crate::agent::loop_::ToolLoopCancelled.into());
+            }
+
             let messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
             // Response cache check (same as turn)
@@ -1098,15 +1106,36 @@ impl Agent {
                     },
                 },
                 &effective_model,
-                self.temperature,
+                Some(self.temperature),
                 stream_opts,
             );
 
             let mut streamed_text = String::new();
             let mut streamed_tool_calls: Vec<zeroclaw_providers::traits::ToolCall> = Vec::new();
             let mut got_stream = false;
+            let mut was_cancelled = false;
 
-            while let Some(item) = stream.next().await {
+            // Consume the stream, checking for cancellation between chunks.
+            // We use a manual loop with `tokio::select!` so that a cancel
+            // signal interrupts even while waiting for the next SSE event
+            // from the provider.
+            loop {
+                let next_item = stream.next();
+
+                let item = if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        biased;
+                        () = token.cancelled() => {
+                            was_cancelled = true;
+                            break;
+                        }
+                        item = next_item => item,
+                    }
+                } else {
+                    next_item.await
+                };
+
+                let Some(item) = item else { break };
                 match item {
                     Ok(event) => match event {
                         zeroclaw_providers::traits::StreamEvent::TextDelta(chunk) => {
@@ -1156,6 +1185,22 @@ impl Agent {
             // Drop the stream so we release the borrow on provider.
             drop(stream);
 
+            // If cancelled during streaming, return partial content with
+            // the interruption marker appended. The caller (ws.rs) will
+            // persist this truncated message and send an abort frame.
+            if was_cancelled {
+                let partial = if streamed_text.is_empty() {
+                    "[interrupted by user]".to_string()
+                } else {
+                    format!("{streamed_text}\n\n[interrupted by user]")
+                };
+                self.history
+                    .push(ConversationMessage::Chat(ChatMessage::assistant(
+                        partial.clone(),
+                    )));
+                return Err(crate::agent::loop_::ToolLoopCancelled.into());
+            }
+
             // If streaming produced text, use it as the response and
             // check for tool calls via the dispatcher.
             let response = if got_stream {
@@ -1167,23 +1212,31 @@ impl Agent {
                     reasoning_content: None,
                 }
             } else {
-                // Fall back to non-streaming chat
-                match self
-                    .provider
-                    .chat(
-                        ChatRequest {
-                            messages: &messages,
-                            tools: if self.tool_dispatcher.should_send_tool_specs() {
-                                Some(&self.tool_specs)
-                            } else {
-                                None
-                            },
+                // Fall back to non-streaming chat, with cancellation guard
+                let chat_fut = self.provider.chat(
+                    ChatRequest {
+                        messages: &messages,
+                        tools: if self.tool_dispatcher.should_send_tool_specs() {
+                            Some(&self.tool_specs)
+                        } else {
+                            None
                         },
-                        &effective_model,
-                        self.temperature,
-                    )
-                    .await
-                {
+                    },
+                    &effective_model,
+                    Some(self.temperature),
+                );
+                let chat_result = if let Some(ref token) = cancel_token {
+                    tokio::select! {
+                        biased;
+                        () = token.cancelled() => {
+                            return Err(crate::agent::loop_::ToolLoopCancelled.into());
+                        }
+                        result = chat_fut => result,
+                    }
+                } else {
+                    chat_fut.await
+                };
+                match chat_result {
                     Ok(resp) => resp,
                     Err(err) => return Err(err),
                 }
@@ -1381,7 +1434,7 @@ mod tests {
             _system_prompt: Option<&str>,
             _message: &str,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<String> {
             Ok("ok".into())
         }
@@ -1390,7 +1443,7 @@ mod tests {
             &self,
             _request: ChatRequest<'_>,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<zeroclaw_providers::ChatResponse> {
             let mut guard = self.responses.lock();
             if guard.is_empty() {
@@ -1417,7 +1470,7 @@ mod tests {
             _system_prompt: Option<&str>,
             _message: &str,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<String> {
             Ok("ok".into())
         }
@@ -1426,7 +1479,7 @@ mod tests {
             &self,
             _request: ChatRequest<'_>,
             model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<zeroclaw_providers::ChatResponse> {
             self.seen_models.lock().push(model.to_string());
             let mut guard = self.responses.lock();
@@ -1826,7 +1879,7 @@ mod tests {
             _system_prompt: Option<&str>,
             _message: &str,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<String> {
             Ok("ok".into())
         }
@@ -1835,7 +1888,7 @@ mod tests {
             &self,
             request: ChatRequest<'_>,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
         ) -> Result<zeroclaw_providers::ChatResponse> {
             self.tools_received.lock().push(request.tools.is_some());
             let mut count = self.call_count.lock();
@@ -1869,7 +1922,7 @@ mod tests {
             &self,
             request: ChatRequest<'_>,
             _model: &str,
-            _temperature: f64,
+            _temperature: Option<f64>,
             _options: zeroclaw_providers::traits::StreamOptions,
         ) -> futures_util::stream::BoxStream<
             'static,
@@ -1940,7 +1993,7 @@ mod tests {
 
         let (event_tx, mut event_rx) = tokio::sync::mpsc::channel::<TurnEvent>(64);
         let response = agent
-            .turn_streamed("use the echo tool", event_tx)
+            .turn_streamed("use the echo tool", event_tx, None)
             .await
             .unwrap();
         assert_eq!(response, "stream-done");
@@ -2083,5 +2136,162 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── Skill tool registration & excluded_tools filtering ──────────
+
+    /// A mock tool whose name is configurable (unlike `MockTool` which is
+    /// always "echo").
+    struct NamedMockTool {
+        tool_name: String,
+    }
+
+    impl NamedMockTool {
+        fn new(name: &str) -> Self {
+            Self {
+                tool_name: name.to_string(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for NamedMockTool {
+        fn name(&self) -> &str {
+            &self.tool_name
+        }
+
+        fn description(&self) -> &str {
+            "mock"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+
+        async fn execute(&self, _args: serde_json::Value) -> Result<crate::tools::ToolResult> {
+            Ok(crate::tools::ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            })
+        }
+    }
+
+    fn make_skill(name: &str, tool_names: &[&str]) -> crate::skills::Skill {
+        crate::skills::Skill {
+            name: name.to_string(),
+            description: format!("{name} skill"),
+            version: "0.1.0".to_string(),
+            author: None,
+            tags: vec![],
+            tools: tool_names
+                .iter()
+                .map(|t| crate::skills::SkillTool {
+                    name: t.to_string(),
+                    description: format!("{t} tool"),
+                    kind: "shell".to_string(),
+                    command: format!("echo {t}"),
+                    args: std::collections::HashMap::new(),
+                })
+                .collect(),
+            prompts: vec![],
+            location: None,
+        }
+    }
+
+    #[test]
+    fn register_skill_tools_adds_skill_tools_to_registry() {
+        let security = Arc::new(crate::security::SecurityPolicy::default());
+        let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(NamedMockTool::new("builtin_a"))];
+
+        let skills = vec![make_skill("deploy", &["run", "status"])];
+        tools::register_skill_tools(&mut tools, &skills, security);
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, &["builtin_a", "deploy.run", "deploy.status"]);
+    }
+
+    #[test]
+    fn register_skill_tools_skips_shadowed_builtins() {
+        let security = Arc::new(crate::security::SecurityPolicy::default());
+        // Pre-populate with a tool whose name matches what the skill would produce.
+        let mut tools: Vec<Box<dyn Tool>> = vec![Box::new(NamedMockTool::new("my_skill.run"))];
+
+        let skills = vec![make_skill("my_skill", &["run"])];
+        tools::register_skill_tools(&mut tools, &skills, security);
+
+        // Should still be just 1 tool — the duplicate was skipped.
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "my_skill.run");
+    }
+
+    #[test]
+    fn excluded_tools_filters_matching_tools() {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(NamedMockTool::new("shell")),
+            Box::new(NamedMockTool::new("file_write")),
+            Box::new(NamedMockTool::new("web_search")),
+        ];
+
+        let excluded = ["shell".to_string(), "file_write".to_string()];
+        tools.retain(|t| !excluded.iter().any(|ex| ex == t.name()));
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, &["web_search"]);
+    }
+
+    #[test]
+    fn excluded_tools_preserves_non_excluded() {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(NamedMockTool::new("shell")),
+            Box::new(NamedMockTool::new("file_read")),
+            Box::new(NamedMockTool::new("web_fetch")),
+        ];
+
+        // Exclude only "shell" — the other two should survive.
+        let excluded = ["shell".to_string()];
+        tools.retain(|t| !excluded.iter().any(|ex| ex == t.name()));
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, &["file_read", "web_fetch"]);
+    }
+
+    #[test]
+    fn empty_excluded_tools_preserves_all() {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(NamedMockTool::new("shell")),
+            Box::new(NamedMockTool::new("file_read")),
+        ];
+
+        let excluded: Vec<String> = vec![];
+        if !excluded.is_empty() {
+            tools.retain(|t| !excluded.iter().any(|ex| ex == t.name()));
+        }
+
+        assert_eq!(tools.len(), 2);
+    }
+
+    #[test]
+    fn excluded_tools_then_skill_registration_end_to_end() {
+        let security = Arc::new(crate::security::SecurityPolicy::default());
+        let mut tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(NamedMockTool::new("shell")),
+            Box::new(NamedMockTool::new("file_read")),
+            Box::new(NamedMockTool::new("web_fetch")),
+        ];
+
+        // Step 1: filter excluded tools (mirrors from_config logic)
+        let excluded = ["shell".to_string()];
+        tools.retain(|t| !excluded.iter().any(|ex| ex == t.name()));
+
+        // Step 2: register skill tools (mirrors from_config logic)
+        let skills = vec![make_skill("ops", &["deploy", "rollback"])];
+        tools::register_skill_tools(&mut tools, &skills, security);
+
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(
+            names,
+            &["file_read", "web_fetch", "ops.deploy", "ops.rollback"]
+        );
     }
 }
